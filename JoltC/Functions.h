@@ -1200,6 +1200,33 @@ JPC_API void JPC_CylinderShapeSettings_default(JPC_CylinderShapeSettings* object
 JPC_API bool JPC_CylinderShapeSettings_Create(const JPC_CylinderShapeSettings* self, JPC_Shape** outShape, JPC_String** outError);
 
 ////////////////////////////////////////////////////////////////////////////////
+// PlaneShapeSettings -> ShapeSettings
+//
+// TITAN PATCH (m34 BodyShape::Halfspace, 2026-05-08): expose
+// JPH::PlaneShapeSettings so backends that want a true infinite half-
+// space (negative-half-space-is-solid) can stop approximating with a
+// thin static box. The plane is described by `Normal` + `Constant`
+// (matching JPH::Plane's `Plane(Vec3 normal, float constant)` ctor;
+// solid side is `point.Dot(normal) + constant < 0`). `HalfExtent`
+// bounds the broad-phase AABB — keep low for perf; cDefaultHalfExtent
+// in JPH is 1000.0f. PlaneShape MUST be static or kinematic per JPH.
+// Pending upstream PR to SecondHalfGames/JoltC.
+
+typedef struct JPC_PlaneShapeSettings {
+	// ShapeSettings
+	uint64_t UserData;
+
+	// PlaneShapeSettings
+	// TODO: Material
+	JPC_Vec3 Normal;
+	float Constant;
+	float HalfExtent;
+} JPC_PlaneShapeSettings;
+
+JPC_API void JPC_PlaneShapeSettings_default(JPC_PlaneShapeSettings* object);
+JPC_API bool JPC_PlaneShapeSettings_Create(const JPC_PlaneShapeSettings* self, JPC_Shape** outShape, JPC_String** outError);
+
+////////////////////////////////////////////////////////////////////////////////
 // ConvexHullShapeSettings -> ConvexShapeSettings -> ShapeSettings
 
 typedef struct JPC_ConvexHullShapeSettings {
