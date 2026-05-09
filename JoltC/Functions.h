@@ -1713,6 +1713,125 @@ JPC_API void JPC_PhysicsSystem_SetSimShapeFilter(JPC_PhysicsSystem* self, const 
 
 JPC_API void JPC_PhysicsSystem_SetContactListener(JPC_PhysicsSystem* self, JPC_ContactListener* inContactListener);
 
+////////////////////////////////////////////////////////////////////////////////
+// SoftBody — TITAN PATCH (m34-c, 2026-05-08, pending upstream PR to
+// SecondHalfGames/JoltC).
+//
+// JPH supports soft bodies (cloth, deformable solids); the C wrapper
+// historically commented these out (Functions.h:1451, 1515-1517, 1533).
+// This block fills the gap with a minimum-viable surface: build vertices
+// + faces, auto-derive constraints, optimize, spawn via BodyInterface,
+// read back deformed vertex positions each frame.
+//
+// Memory ownership:
+// - JPC_SoftBodySharedSettings is a heap-allocated wrapper around a
+//   JPH::Ref<JPH::SoftBodySharedSettings>. Allocate via _new, release
+//   via _delete. One settings object can back many soft bodies — JPH
+//   ref-counts internally, the C side just holds one Ref.
+// - JPC_SoftBodyCreationSettings is value-typed (mirrors the existing
+//   JPC_BodyCreationSettings pattern); fill the struct + pass to
+//   CreateAndAddSoftBody.
+
+typedef struct JPC_SoftBodySharedSettings JPC_SoftBodySharedSettings;
+
+JPC_API JPC_SoftBodySharedSettings* JPC_SoftBodySharedSettings_new(void);
+JPC_API void JPC_SoftBodySharedSettings_delete(JPC_SoftBodySharedSettings* object);
+
+// Add a vertex. `inv_mass = 0` makes the vertex KINEMATIC (pinned —
+// doesn't move under physics, e.g. the top edge of a hanging flag).
+// `inv_mass = 1.0 / mass` for a normal simulated vertex.
+JPC_API void JPC_SoftBodySharedSettings_AddVertex(
+	JPC_SoftBodySharedSettings* self,
+	JPC_Vec3 position,
+	JPC_Vec3 initial_velocity,
+	float inv_mass);
+
+// Add a triangular face. Vertex indices reference vertices added via
+// AddVertex (in insertion order). `material_index` 0 = default material;
+// only the default is supported for now (TODO: PhysicsMaterialList).
+JPC_API void JPC_SoftBodySharedSettings_AddFace(
+	JPC_SoftBodySharedSettings* self,
+	uint32_t v0,
+	uint32_t v1,
+	uint32_t v2,
+	uint32_t material_index);
+
+// Auto-derive edge + bend constraints from the faces. Call once after
+// vertices + faces are filled. `compliance` controls edge stiffness
+// (0 = perfectly rigid, larger = stretchier; FLT_MAX = no edge constraint
+// for any edge involving the affected vertex). `bend_compliance` controls
+// bending; pass FLT_MAX to skip bend constraints (typical for thin cloth
+// where you want it to drape without resisting folds).
+JPC_API void JPC_SoftBodySharedSettings_CreateConstraints(
+	JPC_SoftBodySharedSettings* self,
+	float compliance,
+	float bend_compliance);
+
+// Reorder constraints for parallel solver execution. Call once after
+// CreateConstraints + before spawning bodies; required for performance
+// + correctness (without Optimize the solver runs serially and may
+// produce different results).
+JPC_API void JPC_SoftBodySharedSettings_Optimize(JPC_SoftBodySharedSettings* self);
+
+typedef struct JPC_SoftBodyCreationSettings {
+	// Reference to shared rest-pose data. Caller retains ownership of
+	// the JPC_SoftBodySharedSettings; JPH ref-counts the underlying
+	// JPH::SoftBodySharedSettings so multiple bodies can share one
+	// settings object.
+	JPC_SoftBodySharedSettings* Settings;
+
+	// Initial pose
+	JPC_RVec3 Position;
+	JPC_Quat Rotation;
+
+	// Application-defined opaque tag (mirrors JPC_BodyCreationSettings).
+	uint64_t UserData;
+
+	// Object layer (broad-phase filtering). Same layer-id space as
+	// rigid bodies — soft + rigid bodies in the same layer collide
+	// per the configured ObjectLayerPairFilter.
+	JPC_ObjectLayer ObjectLayer;
+
+	// Solver knobs (defaults match JPH::SoftBodyCreationSettings)
+	uint32_t NumIterations;       // 5
+	float LinearDamping;          // 0.1f
+	float MaxLinearVelocity;      // 500.0f m/s
+	float Restitution;            // 0.0f
+	float Friction;               // 0.2f
+	float Pressure;               // 0.0f (closed-volume inflation; >0 puffs the body up like a balloon)
+	float GravityFactor;          // 1.0f
+	bool UpdatePosition;          // true (track COM via body position)
+	bool MakeRotationIdentity;    // true (bake initial rotation into vertices for accuracy)
+	bool AllowSleeping;           // true
+} JPC_SoftBodyCreationSettings;
+
+JPC_API void JPC_SoftBodyCreationSettings_default(JPC_SoftBodyCreationSettings* object);
+
+// Soft-body equivalent of JPC_BodyInterface_CreateAndAddBody. Creates
+// the body via the shared settings + creation settings, adds it to the
+// physics system, and returns its JPC_BodyID.
+JPC_API JPC_BodyID JPC_BodyInterface_CreateAndAddSoftBody(
+	JPC_BodyInterface* self,
+	const JPC_SoftBodyCreationSettings* settings,
+	JPC_Activation activation_mode);
+
+// Soft-body vertex readback. Used each frame by render / gameplay code
+// to update a deformable mesh from the simulated soft body.
+//
+// Returns the number of simulation vertices (= number of vertices added
+// via AddVertex on the shared settings). Returns 0 if `self` is not a
+// soft body.
+JPC_API uint32_t JPC_Body_GetSoftBodyVertexCount(const JPC_Body* self);
+
+// Reads vertex `index` into `*out_position` in WORLD space (combines the
+// body's pose with the per-vertex local position). Returns false if
+// `self` is not a soft body or `index` is out of range; *out_position
+// is unchanged in that case.
+JPC_API bool JPC_Body_GetSoftBodyVertexPosition(
+	const JPC_Body* self,
+	uint32_t index,
+	JPC_Vec3* out_position);
+
 #ifdef __cplusplus
 }
 #endif

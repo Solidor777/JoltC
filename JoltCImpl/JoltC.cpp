@@ -25,6 +25,11 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/TriangleShape.h>
+// TITAN PATCH (m34-c, 2026-05-08): soft-body C wrapper headers. Pending
+// upstream PR to SecondHalfGames/JoltC.
+#include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
+#include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
+#include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/SimShapeFilter.h>
 #include <Jolt/Physics/Constraints/ConstraintPart/SwingTwistConstraintPart.h>
@@ -3123,4 +3128,166 @@ JPC_API void JPC_PhysicsSystem_SetContactListener(
 	JPC_ContactListener* inContactListener)
 {
 	to_jph(self)->SetContactListener(to_jph(inContactListener));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SoftBody — TITAN PATCH (m34-c, 2026-05-08).
+//
+// Implementations for the SoftBody surface declared at the bottom of
+// JoltC/Functions.h. JPC_SoftBodySharedSettings is a heap-allocated
+// wrapper holding a JPH::Ref<...> so the C side has stable storage and
+// JPH's ref-counting handles multi-body sharing transparently.
+
+struct JPC_SoftBodySharedSettings {
+	JPH::Ref<JPH::SoftBodySharedSettings> ref;
+};
+
+JPC_API JPC_SoftBodySharedSettings* JPC_SoftBodySharedSettings_new(void) {
+	auto* wrapper = new JPC_SoftBodySharedSettings();
+	wrapper->ref = new JPH::SoftBodySharedSettings();
+	return wrapper;
+}
+
+JPC_API void JPC_SoftBodySharedSettings_delete(JPC_SoftBodySharedSettings* object) {
+	delete object;
+}
+
+JPC_API void JPC_SoftBodySharedSettings_AddVertex(
+	JPC_SoftBodySharedSettings* self,
+	JPC_Vec3 position,
+	JPC_Vec3 initial_velocity,
+	float inv_mass)
+{
+	JPH::SoftBodySharedSettings::Vertex v;
+	v.mPosition = JPH::Float3(position.x, position.y, position.z);
+	v.mVelocity = JPH::Float3(initial_velocity.x, initial_velocity.y, initial_velocity.z);
+	v.mInvMass = inv_mass;
+	self->ref->mVertices.push_back(v);
+}
+
+JPC_API void JPC_SoftBodySharedSettings_AddFace(
+	JPC_SoftBodySharedSettings* self,
+	uint32_t v0,
+	uint32_t v1,
+	uint32_t v2,
+	uint32_t material_index)
+{
+	JPH::SoftBodySharedSettings::Face f(v0, v1, v2, material_index);
+	self->ref->AddFace(f);
+}
+
+JPC_API void JPC_SoftBodySharedSettings_CreateConstraints(
+	JPC_SoftBodySharedSettings* self,
+	float compliance,
+	float bend_compliance)
+{
+	JPH::SoftBodySharedSettings::VertexAttributes attr;
+	attr.mCompliance = compliance;
+	attr.mShearCompliance = compliance;
+	attr.mBendCompliance = bend_compliance;
+	attr.mLRAType = JPH::SoftBodySharedSettings::ELRAType::None;
+	attr.mLRAMaxDistanceMultiplier = 1.0f;
+
+	// FLT_MAX bend_compliance == "no bend constraint" per JPH's
+	// VertexAttributes contract; pair that with EBendType::None so the
+	// constraint generator skips bend entries entirely (saves
+	// allocation + iteration cost).
+	auto bend_type = (bend_compliance >= FLT_MAX)
+		? JPH::SoftBodySharedSettings::EBendType::None
+		: JPH::SoftBodySharedSettings::EBendType::Distance;
+
+	self->ref->CreateConstraints(&attr, 1, bend_type);
+}
+
+JPC_API void JPC_SoftBodySharedSettings_Optimize(JPC_SoftBodySharedSettings* self) {
+	self->ref->Optimize();
+}
+
+JPC_API void JPC_SoftBodyCreationSettings_default(JPC_SoftBodyCreationSettings* object) {
+	object->Settings = nullptr;
+	object->Position = JPC_RVec3{0, 0, 0, 0};
+	object->Rotation = JPC_Quat{0, 0, 0, 1};
+	object->UserData = 0;
+	object->ObjectLayer = 0;
+	object->NumIterations = 5;
+	object->LinearDamping = 0.1f;
+	object->MaxLinearVelocity = 500.0f;
+	object->Restitution = 0.0f;
+	object->Friction = 0.2f;
+	object->Pressure = 0.0f;
+	object->GravityFactor = 1.0f;
+	object->UpdatePosition = true;
+	object->MakeRotationIdentity = true;
+	object->AllowSleeping = true;
+}
+
+static JPH::SoftBodyCreationSettings to_jph_soft_body_creation_settings(
+	const JPC_SoftBodyCreationSettings* in)
+{
+	JPH::SoftBodyCreationSettings out;
+	out.mSettings = in->Settings ? in->Settings->ref.GetPtr() : nullptr;
+	out.mPosition = JPH::RVec3(in->Position.x, in->Position.y, in->Position.z);
+	out.mRotation = JPH::Quat(in->Rotation.x, in->Rotation.y, in->Rotation.z, in->Rotation.w);
+	out.mUserData = in->UserData;
+	out.mObjectLayer = in->ObjectLayer;
+	out.mNumIterations = in->NumIterations;
+	out.mLinearDamping = in->LinearDamping;
+	out.mMaxLinearVelocity = in->MaxLinearVelocity;
+	out.mRestitution = in->Restitution;
+	out.mFriction = in->Friction;
+	out.mPressure = in->Pressure;
+	out.mGravityFactor = in->GravityFactor;
+	out.mUpdatePosition = in->UpdatePosition;
+	out.mMakeRotationIdentity = in->MakeRotationIdentity;
+	out.mAllowSleeping = in->AllowSleeping;
+	return out;
+}
+
+JPC_API JPC_BodyID JPC_BodyInterface_CreateAndAddSoftBody(
+	JPC_BodyInterface* self,
+	const JPC_SoftBodyCreationSettings* settings,
+	JPC_Activation activation_mode)
+{
+	JPH::SoftBodyCreationSettings sbcs = to_jph_soft_body_creation_settings(settings);
+	JPH::BodyID id = to_jph(self)->CreateAndAddSoftBody(sbcs, to_jph(activation_mode));
+	return JPC_BodyID{id.GetIndexAndSequenceNumber()};
+}
+
+JPC_API uint32_t JPC_Body_GetSoftBodyVertexCount(const JPC_Body* self) {
+	auto* body = to_jph(self);
+	if (body->GetBodyType() != JPH::EBodyType::SoftBody) {
+		return 0;
+	}
+	auto* mp = static_cast<const JPH::SoftBodyMotionProperties*>(body->GetMotionProperties());
+	return static_cast<uint32_t>(mp->GetVertices().size());
+}
+
+JPC_API bool JPC_Body_GetSoftBodyVertexPosition(
+	const JPC_Body* self,
+	uint32_t index,
+	JPC_Vec3* out_position)
+{
+	auto* body = to_jph(self);
+	if (body->GetBodyType() != JPH::EBodyType::SoftBody) {
+		return false;
+	}
+	auto* mp = static_cast<const JPH::SoftBodyMotionProperties*>(body->GetMotionProperties());
+	const auto& vertices = mp->GetVertices();
+	if (index >= vertices.size()) {
+		return false;
+	}
+	// vertex.mPosition is local to the body's COM (per
+	// JPH::SoftBodyVertex docs: "Position, relative to the center of
+	// mass of the soft body"). With UpdatePosition=true (default),
+	// world-space = body.GetPosition() + body.GetRotation() *
+	// vertex.mPosition. With MakeRotationIdentity=true (default), the
+	// initial rotation is baked into vertices and the body rotation
+	// stays identity, so the rotation application is essentially
+	// free at runtime.
+	JPH::RVec3 world = body->GetPosition() + body->GetRotation() * vertices[index].mPosition;
+	out_position->x = static_cast<float>(world.GetX());
+	out_position->y = static_cast<float>(world.GetY());
+	out_position->z = static_cast<float>(world.GetZ());
+	out_position->_w = 0.0f;
+	return true;
 }
