@@ -11,10 +11,10 @@
 	#define JPC_API
 #endif
 
-// TITAN PATCH (m34-a-iii armv7, 2026-05-08): mirror JPH's per-arch VECTOR /
-// DVECTOR alignment logic from `JoltPhysics/Jolt/Core/Core.h`. These two
-// values MUST match what JPH computes, otherwise the LAYOUT_COMPATIBLE
-// static_asserts in `JoltCImpl/JoltC.cpp` fail at build time.
+// Mirror JPH's per-arch VECTOR / DVECTOR alignment logic from
+// `JoltPhysics/Jolt/Core/Core.h`. These two values MUST match what JPH
+// computes, otherwise the LAYOUT_COMPATIBLE static_asserts in
+// `JoltCImpl/JoltC.cpp` fail at build time.
 //
 // The load-bearing case is 32-bit ARM (e.g. armv7 Android, armv7 Linux):
 // JPH falls back to 8-byte alignment because 32-bit ARM cannot stack-align
